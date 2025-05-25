@@ -46,15 +46,16 @@ receive() external payable {}
 // getLatestPrice function:
 function getLatestPrice(address priceFeedAddress) public view returns
 (uint256 price) {
-require(priceFeedAddress != address(0), "Invalid price feed address");
-AggregatorV3Interface priceFeed =
-AggregatorV3Interface(priceFeedAddress);
-(, int256 answer,, uint256 updatedAt, ) =
-priceFeed.latestRoundData();
-require(answer > 0, "Invalid price");
-require(block.timestamp - updatedAt <= PRICE_STALENESS_THRESHOLD,
-"Price data is stale");
-return uint256(answer);
+  require(priceFeedAddress != address(0), "Invalid price feed address");
+  AggregatorV3Interface priceFeed =
+  AggregatorV3Interface(priceFeedAddress);
+  (, int256 answer,, uint256 updatedAt, ) =
+  priceFeed.latestRoundData();
+  require(answer > 0, "Invalid price");
+  require(block.timestamp - updatedAt <= PRICE_STALENESS_THRESHOLD,
+  "Price data is stale");
+  return uint256(answer);
+}
 
 // setSlippagePercent function:
 function setSlippagePercent(uint256 _slippage) external onlyOwner {
@@ -100,37 +101,40 @@ function _calculateMinOut(uint256 expectedAmount) private view returns
 }
 
 // swapETHForTokens function:
-function swapETHForTokens(address token, address[] memory path,
-uint256 maxPriceImpact) external payable onlyOwner nonReentrant
-whenNotPaused {
-  require(msg.value > 0 && whitelistedTokens[token], "Invalid swap");
-  require(maxPriceImpact <= 1000, "Max price impact exceeded");
-  _validatePath(path, token, true);
-  uint256[] memory out = uniswapRouter.getAmountsOut(msg.value, path);
-  uint256 minOut = _calculateMinOut(out[out.length - 1]);
-  uint256[] memory result = uniswapRouter.swapExactETHForTokens{value: msg.value}(minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
-  tradeHistory.push(Trade(token, msg.value, result[result.length - 1], block.timestamp, true));
-  totalTrades++;
-  emit TradeExecuted(token, msg.value, result[result.length - 1], block.timestamp, true);
+function swapETHForTokens(address token, address[] memory path, uint256 maxPriceImpact) external payable onlyOwner nonReentrant whenNotPaused {
+    require(msg.value > 0 && whitelistedTokens[token], "Invalid swap");
+    require(maxPriceImpact <= 1000, "Max price impact exceeded");
+    _validatePath(path, token, true);
+
+    // Freshness check
+    getLatestPrice(tokenPriceFeeds[token]);
+
+    uint256[] memory out = uniswapRouter.getAmountsOut(msg.value, path);
+    uint256 minOut = _calculateMinOut(out[out.length - 1]);
+    uint256[] memory result = uniswapRouter.swapExactETHForTokens{value: msg.value}(minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
+    tradeHistory.push(Trade(token, msg.value, result[result.length - 1], block.timestamp, true));
+    totalTrades++;
+    emit TradeExecuted(token, msg.value, result[result.length - 1], block.timestamp, true);
 }
 
 // swapTokensForETH function:
 function swapTokensForETH(address token, uint256 tokenAmount, address[] memory path, uint256 maxPriceImpact) external onlyOwner nonReentrant whenNotPaused {
-  require(whitelistedTokens[token] && tokenAmount > 0, "Invalid swap");
-  require(maxPriceImpact <= 1000, "Max price impact exceeded");
-  _validatePath(path, token, false);
-  require(IERC20(token).balanceOf(address(this)) >= tokenAmount, "Insufficient token balance");
+    require(whitelistedTokens[token] && tokenAmount > 0, "Invalid swap");
+    require(maxPriceImpact <= 1000, "Max price impact exceeded");
+    _validatePath(path, token, false);
+    require(IERC20(token).balanceOf(address(this)) >= tokenAmount, "Insufficient token balance");
 
-  // ✅ Direct approve() with reset (for USDT compatibility)
-  IERC20(token).approve(address(uniswapRouter), 0);
-  IERC20(token).approve(address(uniswapRouter), tokenAmount);
-  uint256[] memory out = uniswapRouter.getAmountsOut(tokenAmount, path);
-  uint256 minOut = _calculateMinOut(out[out.length - 1]);
-  uint256[] memory result = uniswapRouter.swapExactTokensForETH(tokenAmount, minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
-  tradeHistory.push(Trade(token, tokenAmount, result[result.length - 1], block.timestamp, false));
-  totalTrades++;
-  emit TradeExecuted(token, tokenAmount, result[result.length - 1],
-  block.timestamp, false);
+    // Freshness check
+    getLatestPrice(tokenPriceFeeds[token]);
+
+    IERC20(token).approve(address(uniswapRouter), 0);
+    IERC20(token).approve(address(uniswapRouter), tokenAmount);
+    uint256[] memory out = uniswapRouter.getAmountsOut(tokenAmount, path);
+    uint256 minOut = _calculateMinOut(out[out.length - 1]);
+    uint256[] memory result = uniswapRouter.swapExactTokensForETH(tokenAmount, minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
+    tradeHistory.push(Trade(token, tokenAmount, result[result.length - 1], block.timestamp, false));
+    totalTrades++;
+    emit TradeExecuted(token, tokenAmount, result[result.length - 1], block.timestamp, false);
 }
 
 
@@ -144,9 +148,10 @@ require(withdrawAmount <= balance, "Withdraw exceeds balance");
 IERC20(token).safeTransfer(owner(), withdrawAmount);
 emit TokensWithdrawn(token, withdrawAmount);
 }
+
 function withdrawETH(uint256 amount) external onlyOwner nonReentrant {
 uint256 balance = address(this).balance;
-require(token != address(0), "Token address is zero");
+require(balance > 0, "No tokens to withdraw");
 uint256 withdrawAmount = amount == 0 ? balance : amount;
 require(withdrawAmount <= balance, "Withdraw exceeds balance");
 (bool success,) = payable(owner()).call{value:
@@ -154,12 +159,15 @@ withdrawAmount}("");
 require(success);
 emit ETHWithdrawn(withdrawAmount);
 }
+
 function pauseTrading() external onlyOwner {
 _pause();
 }
 function unpauseTrading() external onlyOwner {
 _unpause();
 }
+
+
 function emergencyWithdraw(address token) external onlyOwner
 whenPaused {
 if (token == address(0)) {
@@ -178,11 +186,10 @@ emit EmergencyWithdrawal(token, tokenBalance);
 }
 }
 }
-function getTradeHistory(uint256 offset, uint256 limit) external view returns (Trade[] memory trades) {
-    require(
-        (offset < tradeHistory.length) || (offset == tradeHistory.length && limit == 0),
-        "Invalid offset or limit"
-    );
+
+function getTradeHistory(uint256 offset, uint256 limit) external view
+returns (Trade[] memory trades) {
+require(offset < tradeHistory.length);
 uint256 end = offset + limit;
 if (end > tradeHistory.length) end = tradeHistory.length;
 trades = new Trade[](end - offset);
@@ -190,6 +197,7 @@ for (uint256 i = offset; i < end; i++) {
 trades[i - offset] = tradeHistory[i];
 }
 }
+
 function getBalances(address[] memory tokens) external view returns
 (uint256[] memory balances) {
 balances = new uint256[](tokens.length);
@@ -198,6 +206,7 @@ balances[i] = tokens[i] == address(0) ? address(this).balance
 : IERC20(tokens[i]).balanceOf(address(this));
 }
 }
+
 function isTokenValid(address token) external view returns (bool) {
 if (!whitelistedTokens[token] || tokenPriceFeeds[token] ==
 address(0)) return false;
@@ -208,6 +217,7 @@ return true;
 return false;
 }
 }
+
 // ✅ Self-destruct (testnet use only)
 function destroyContract() external onlyOwner {
 selfdestruct(payable(owner()));
