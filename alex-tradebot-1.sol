@@ -44,17 +44,17 @@ uniswapRouter = IUniswapV2Router02(_router);
 receive() external payable {}
 
 // getLatestPrice function:
-function getLatestPrice(address priceFeedAddress) public view returns (uint256 price) {
-    require(priceFeedAddress != address(0), "Invalid price feed address");
-    AggregatorV3Interface priceFeed = AggregatorV3Interface(priceFeedAddress);
-    (, int256 answer,, uint256 updatedAt, ) = priceFeed.latestRoundData();
-    require(answer > 0, "Invalid price");
-
-    if (block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) {
-        revert("Price data is stale - contract is paused"); // Revert immediately; contract will be paused on trading attempt
-    }
-    return uint256(answer);
-}
+function getLatestPrice(address priceFeedAddress) public view returns
+(uint256 price) {
+require(priceFeedAddress != address(0), "Invalid price feed address");
+AggregatorV3Interface priceFeed =
+AggregatorV3Interface(priceFeedAddress);
+(, int256 answer,, uint256 updatedAt, ) =
+priceFeed.latestRoundData();
+require(answer > 0, "Invalid price");
+require(block.timestamp - updatedAt <= PRICE_STALENESS_THRESHOLD,
+"Price data is stale");
+return uint256(answer);
 
 // setSlippagePercent function:
 function setSlippagePercent(uint256 _slippage) external onlyOwner {
