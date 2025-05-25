@@ -63,8 +63,7 @@ emit SlippageUpdated(old, _slippage);
 }
 function whitelistToken(address token, address priceFeed) external
 onlyOwner {
-address");
-require(token != address(0) && priceFeed != address(0), "Invalid
+require(token != address(0) && priceFeed != address(0), "Invalid address");
 getLatestPrice(priceFeed);
 whitelistedTokens[token] = true;
 tokenPriceFeeds[token] = priceFeed;
