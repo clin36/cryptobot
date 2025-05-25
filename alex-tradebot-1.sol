@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-
 pragma solidity ^0.8.0;
 
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
@@ -44,8 +43,7 @@ uniswapRouter = IUniswapV2Router02(_router);
 receive() external payable {}
 function getLatestPrice(address priceFeedAddress) public view returns
 (uint256 price) {
-require(priceFeedAddress != address(0), "Invalid price feed
-address");
+require(priceFeedAddress != address(0), "Invalid price feed address");
 AggregatorV3Interface priceFeed =
 AggregatorV3Interface(priceFeedAddress);
 (, int256 answer,, uint256 updatedAt, ) =
@@ -92,8 +90,7 @@ return (expectedAmount * (100 - slippagePercent)) / 100;
 function swapETHForTokens(address token, address[] memory path,
 uint256 maxPriceImpact) external payable onlyOwner nonReentrant
 whenNotPaused {
-require(msg.value > 0 && whitelistedTokens[token], "Invalid
-swap");
+require(msg.value > 0 && whitelistedTokens[token], "Invalid swap");
 require(maxPriceImpact <= 1000, "Max price impact exceeded");
 _validatePath(path, token, true);
 uint256[] memory out = uniswapRouter.getAmountsOut(msg.value,
@@ -114,8 +111,7 @@ uint256 tokenAmount,
 address[] memory path,
 uint256 maxPriceImpact
 ) external onlyOwner nonReentrant whenNotPaused {
-require(whitelistedTokens[token] && tokenAmount > 0, "Invalid
-swap");
+require(whitelistedTokens[token] && tokenAmount > 0, "Invalid swap");
 require(maxPriceImpact <= 1000, "Max price impact exceeded");
 _validatePath(path, token, false);
 require(IERC20(token).balanceOf(address(this)) >= tokenAmount,
