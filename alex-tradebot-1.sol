@@ -7,8 +7,16 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import
-"@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+
+mapping(address => uint256) public lastTxBlock;
+
+modifier antiMEV() {
+    require(lastTxBlock[msg.sender] < block.number, "Anti-MEV: Only one tx per block allowed");
+    _;
+    lastTxBlock[msg.sender] = block.number;
+}
+
 contract EnhancedAICryptoTradingBot is ReentrancyGuard, Pausable, Ownable
 {
 using SafeERC20 for IERC20;
@@ -43,19 +51,28 @@ uniswapRouter = IUniswapV2Router02(_router);
 }
 receive() external payable {}
 
-// getLatestPrice function:
-function getLatestPrice(address priceFeedAddress) public view returns
-(uint256 price) {
-  require(priceFeedAddress != address(0), "Invalid price feed address");
-  AggregatorV3Interface priceFeed =
-  AggregatorV3Interface(priceFeedAddress);
-  (, int256 answer,, uint256 updatedAt, ) =
-  priceFeed.latestRoundData();
-  require(answer > 0, "Invalid price");
-  require(block.timestamp - updatedAt <= PRICE_STALENESS_THRESHOLD,
-  "Price data is stale");
-  return uint256(answer);
+
+// New internal function to check for price staleness due to slow Chainlink updating
+function _handleStalePrice(address priceFeedAddress, uint256 updatedAt) internal {
+    emit ChainlinkStalePrice(priceFeedAddress, updatedAt, block.timestamp);
+    _pause(); // Pause trading if stale price detected
+    // Off-chain notification to owner can be set up to listen for the event
 }
+
+function getLatestPrice(address priceFeedAddress) public view returns (uint256 price) {
+    require(priceFeedAddress != address(0), "Invalid price feed address");
+    AggregatorV3Interface priceFeed = AggregatorV3Interface(priceFeedAddress);
+    (, int256 answer,, uint256 updatedAt, ) = priceFeed.latestRoundData();
+    require(answer > 0, "Invalid price");
+
+    // Use internal handler for staleness
+    if (block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) {
+        revert("Price data is stale"); // This will be replaced by the wrapper below
+    }
+
+    return uint256(answer);
+}
+
 
 // setSlippagePercent function:
 function setSlippagePercent(uint256 _slippage) external onlyOwner {
@@ -101,13 +118,15 @@ function _calculateMinOut(uint256 expectedAmount) private view returns
 }
 
 // swapETHForTokens function:
-function swapETHForTokens(address token, address[] memory path, uint256 maxPriceImpact) external payable onlyOwner nonReentrant whenNotPaused {
+function swapETHForTokens(
+    address token, address[] memory path, uint256 maxPriceImpact
+) external payable onlyOwner nonReentrant whenNotPaused antiMEV {
     require(msg.value > 0 && whitelistedTokens[token], "Invalid swap");
     require(maxPriceImpact <= 1000, "Max price impact exceeded");
     _validatePath(path, token, true);
 
     // Freshness check
-    getLatestPrice(tokenPriceFeeds[token]);
+    _getLatestPriceWithStaleCheck(tokenPriceFeeds[token]);
 
     uint256[] memory out = uniswapRouter.getAmountsOut(msg.value, path);
     uint256 minOut = _calculateMinOut(out[out.length - 1]);
@@ -118,17 +137,24 @@ function swapETHForTokens(address token, address[] memory path, uint256 maxPrice
 }
 
 // swapTokensForETH function:
-function swapTokensForETH(address token, uint256 tokenAmount, address[] memory path, uint256 maxPriceImpact) external onlyOwner nonReentrant whenNotPaused {
+function swapTokensForETH(
+    address token, uint256 tokenAmount, address[] memory path, uint256 maxPriceImpact
+) external onlyOwner nonReentrant whenNotPaused antiMEV {
     require(whitelistedTokens[token] && tokenAmount > 0, "Invalid swap");
     require(maxPriceImpact <= 1000, "Max price impact exceeded");
     _validatePath(path, token, false);
     require(IERC20(token).balanceOf(address(this)) >= tokenAmount, "Insufficient token balance");
 
     // Freshness check
-    getLatestPrice(tokenPriceFeeds[token]);
+    _getLatestPriceWithStaleCheck(tokenPriceFeeds[token]);
 
-    IERC20(token).approve(address(uniswapRouter), 0);
-    IERC20(token).approve(address(uniswapRouter), tokenAmount);
+    // Approve tokens for Uniswap router using SafeERC20
+    uint256 currentAllowance = IERC20(token).allowance(address(this), address(uniswapRouter));
+    if (currentAllowance != 0) {
+      IERC20(token).safeApprove(address(uniswapRouter), 0);
+    }
+    IERC20(token).safeApprove(address(uniswapRouter), tokenAmount);   
+
     uint256[] memory out = uniswapRouter.getAmountsOut(tokenAmount, path);
     uint256 minOut = _calculateMinOut(out[out.length - 1]);
     uint256[] memory result = uniswapRouter.swapExactTokensForETH(tokenAmount, minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
@@ -219,7 +245,8 @@ return false;
 }
 
 // ✅ Self-destruct (testnet use only)
-function destroyContract() external onlyOwner {
-selfdestruct(payable(owner()));
+function destroyContract() external onlyOwner whenPaused {
+    selfdestruct(payable(owner()));
 }
+
 }
