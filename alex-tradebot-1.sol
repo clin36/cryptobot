@@ -9,6 +9,8 @@ import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
+contract EnhancedAICryptoTradingBot is ReentrancyGuard, Pausable, Ownable
+{
 mapping(address => uint256) public lastTxBlock;
 
 modifier antiMEV() {
@@ -17,8 +19,6 @@ modifier antiMEV() {
     lastTxBlock[msg.sender] = block.number;
 }
 
-contract EnhancedAICryptoTradingBot is ReentrancyGuard, Pausable, Ownable
-{
 using SafeERC20 for IERC20;
 uint256 public constant MAX_SLIPPAGE = 50;
 uint256 public constant DEADLINE_BUFFER = 300;
