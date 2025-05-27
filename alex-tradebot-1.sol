@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: MIT
+//  SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.0;
 
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
@@ -8,6 +9,7 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract EnhancedAICryptoTradingBot is ReentrancyGuard, Pausable, Ownable
 {
@@ -51,26 +53,28 @@ uniswapRouter = IUniswapV2Router02(_router);
 }
 receive() external payable {}
 
+// check if price is stale
+function priceIsStale(uint256 updatedAt) internal view returns (bool) {
+    return block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD;
+}
 
-// New internal function to check for price staleness due to slow Chainlink updating
+function getLatestPriceWithStaleCheck(address priceFeedAddress) public view returns (uint256 price) {
+    require(priceFeedAddress != address(0), "Invalid price feed address");
+    try AggregatorV3Interface(priceFeedAddress).latestRoundData() returns
+    (uint80, int256 answer, uint256, uint256 updatedAt, uint80) {
+      require(answer > 0, "Invalid price");
+      require(block.timestamp - updatedAt <= PRICE_STALENESS_THRESHOLD, "Price data is stale");
+      return uint256(answer);
+    } catch {
+      revert("Invalid Chainlink price feed, incompatible interface, or price is stale");
+    }
+}
+
 function _handleStalePrice(address priceFeedAddress, uint256 updatedAt) internal {
     emit ChainlinkStalePrice(priceFeedAddress, updatedAt, block.timestamp);
     _pause(); // Pause trading if stale price detected
     // Off-chain notification to owner can be set up to listen for the event
-}
-
-function getLatestPrice(address priceFeedAddress) public view returns (uint256 price) {
-    require(priceFeedAddress != address(0), "Invalid price feed address");
-    AggregatorV3Interface priceFeed = AggregatorV3Interface(priceFeedAddress);
-    (, int256 answer,, uint256 updatedAt, ) = priceFeed.latestRoundData();
-    require(answer > 0, "Invalid price");
-
-    // Use internal handler for staleness
-    if (block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) {
-        revert("Price data is stale"); // This will be replaced by the wrapper below
-    }
-
-    return uint256(answer);
+    if (priceIsStale(updatedAt)) revert("Price data is stale");
 }
 
 
@@ -86,7 +90,7 @@ function setSlippagePercent(uint256 _slippage) external onlyOwner {
 function whitelistToken(address token, address priceFeed) external
 onlyOwner {
   require(token != address(0) && priceFeed != address(0), "Invalid address");
-  getLatestPrice(priceFeed);
+  getLatestPriceWithStaleCheck(priceFeed);
   whitelistedTokens[token] = true;
   tokenPriceFeeds[token] = priceFeed;
   emit TokenWhitelisted(token, priceFeed);
@@ -118,51 +122,56 @@ function _calculateMinOut(uint256 expectedAmount) private view returns
 }
 
 // swapETHForTokens function:
-function swapETHForTokens(
-    address token, address[] memory path, uint256 maxPriceImpact
-) external payable onlyOwner nonReentrant whenNotPaused antiMEV {
-    require(msg.value > 0 && whitelistedTokens[token], "Invalid swap");
-    require(maxPriceImpact <= 1000, "Max price impact exceeded");
-    _validatePath(path, token, true);
+function swapETHForTokens (address token, address[] memory path, uint256 maxPriceImpact) 
+  external payable onlyOwner nonReentrant whenNotPaused antiMEV {
+  require(msg.value > 0 && whitelistedTokens[token], "Invalid swap");
+  require(maxPriceImpact <= 1000, "Max price impact exceeded");
+  _validatePath(path, token, true);
 
-    // Freshness check
-    _getLatestPriceWithStaleCheck(tokenPriceFeeds[token]);
-
-    uint256[] memory out = uniswapRouter.getAmountsOut(msg.value, path);
-    uint256 minOut = _calculateMinOut(out[out.length - 1]);
-    uint256[] memory result = uniswapRouter.swapExactETHForTokens{value: msg.value}(minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
-    tradeHistory.push(Trade(token, msg.value, result[result.length - 1], block.timestamp, true));
-    totalTrades++;
-    emit TradeExecuted(token, msg.value, result[result.length - 1], block.timestamp, true);
+  // Freshness check
+  // getLatestPrice(address priceFeedAddress)
+  uint256[] memory out;
+  try uniswapRouter.getAmountsOut(msg.value, path) returns (uint256[] memory amounts) {
+    out = amounts;
+  } catch {
+    revert("Uniswap: Failed to get output amounts (likely invalid path or no liquidity)");
+  }
+  uint256 minOut = _calculateMinOut(out[out.length - 1]);
+  uint256[] memory result = uniswapRouter.swapExactETHForTokens{value:
+  msg.value}(minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
+  tradeHistory.push(Trade(token, msg.value, result[result.length - 1], block.timestamp, true));
+  totalTrades++;
+  emit TradeExecuted(token, msg.value, result[result.length - 1], block.timestamp, true);
 }
 
 // swapTokensForETH function:
-function swapTokensForETH(
-    address token, uint256 tokenAmount, address[] memory path, uint256 maxPriceImpact
-) external onlyOwner nonReentrant whenNotPaused antiMEV {
+function swapTokensForETH (
+  address token, uint256 tokenAmount, address[] memory path, uint256 maxPriceImpact
+  ) external onlyOwner nonReentrant whenNotPaused antiMEV {
     require(whitelistedTokens[token] && tokenAmount > 0, "Invalid swap");
     require(maxPriceImpact <= 1000, "Max price impact exceeded");
     _validatePath(path, token, false);
     require(IERC20(token).balanceOf(address(this)) >= tokenAmount, "Insufficient token balance");
 
     // Freshness check
-    _getLatestPriceWithStaleCheck(tokenPriceFeeds[token]);
-
-    // Approve tokens for Uniswap router using SafeERC20
-    uint256 currentAllowance = IERC20(token).allowance(address(this), address(uniswapRouter));
-    if (currentAllowance != 0) {
-      IERC20(token).safeApprove(address(uniswapRouter), 0);
+    // getLatestPrice(address priceFeedAddress)
+    // ✅ Direct approve() with reset (for USDT compatibility)
+    IERC20(token).approve(address(uniswapRouter), 0);
+    IERC20(token).approve(address(uniswapRouter), tokenAmount);
+    uint256[] memory out;
+    try uniswapRouter.getAmountsOut(tokenAmount, path) returns (uint256[] memory amounts) {
+      out = amounts;
+    } catch {
+      revert("Uniswap: Failed to get output amounts (likely invalid path or no liquidity)");
     }
-    IERC20(token).safeApprove(address(uniswapRouter), tokenAmount);   
-
-    uint256[] memory out = uniswapRouter.getAmountsOut(tokenAmount, path);
     uint256 minOut = _calculateMinOut(out[out.length - 1]);
-    uint256[] memory result = uniswapRouter.swapExactTokensForETH(tokenAmount, minOut, path, address(this), block.timestamp + DEADLINE_BUFFER);
+    uint256[] memory result =
+    uniswapRouter.swapExactTokensForETH(tokenAmount, minOut, path,
+    address(this), block.timestamp + DEADLINE_BUFFER);
     tradeHistory.push(Trade(token, tokenAmount, result[result.length - 1], block.timestamp, false));
     totalTrades++;
     emit TradeExecuted(token, tokenAmount, result[result.length - 1], block.timestamp, false);
 }
-
 
 function withdrawTokens(address token, uint256 amount) external
 onlyOwner nonReentrant {
@@ -236,7 +245,7 @@ balances[i] = tokens[i] == address(0) ? address(this).balance
 function isTokenValid(address token) external view returns (bool) {
 if (!whitelistedTokens[token] || tokenPriceFeeds[token] ==
 address(0)) return false;
-try this.getLatestPrice(tokenPriceFeeds[token]) returns (uint256)
+try this.getLatestPriceWithStaleCheck(tokenPriceFeeds[token]) returns (uint256)
 {
 return true;
 } catch {
@@ -246,7 +255,7 @@ return false;
 
 // ✅ Self-destruct (testnet use only)
 function destroyContract() external onlyOwner whenPaused {
-    selfdestruct(payable(owner()));
+selfdestruct(payable(owner()));
 }
 
 }
